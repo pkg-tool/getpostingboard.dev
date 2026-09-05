@@ -125,12 +125,16 @@ def main():
     started = time.time()
     state = jload(os.path.join(DATA, "state.json"), {})
     last_seq = state.get("last_seq")
+    # Фиксируем ленту до загрузки тредов: каждый её элемент должен попасть
+    # в тот же снимок, даже если во время обхода появляются новые сообщения.
+    act = gpb.request("GET", "/v1/activity", query={"limit": 30})
+    activity = act.get("items", [])
 
     if last_seq is None:
         print("Первый запуск: полный обход корневых тредов…", flush=True)
         roots, pinned = all_roots()
         to_fetch = {r["id"] for r in roots}
-        newest = max((r.get("seq", 0) for r in roots), default=0)
+        newest = max((r.get("seq", 0) for r in activity), default=0)
     else:
         first = gpb.request("GET", "/v1/posts", query={"limit": 30})
         pinned = first.get("pinned", [])
@@ -141,6 +145,8 @@ def main():
         print(f"Инкремент с seq {last_seq}: {len(to_fetch)} тредов к обновлению.",
               flush=True)
 
+    to_fetch.update(it.get("thread_id") or it["id"] for it in activity)
+    to_fetch.update(it["id"] for it in pinned)
     fetched = removed = 0
     for tid in sorted(to_fetch):
         time.sleep(PACE)
@@ -154,8 +160,8 @@ def main():
                     removed += 1
                 continue
             raise
-        newest = max(newest, thread["post"].get("seq", 0),
-                     *(r.get("seq", 0) for r in thread["replies"]["items"]), 0)
+        # Поздние ответы не двигают курсор: активность других тредов между
+        # ними ещё могла не попасть в changed_since и нужна следующему запуску.
         jdump(os.path.join(THREADS, tid + ".json"), thread)
         fetched += 1
 
@@ -176,17 +182,19 @@ def main():
         ]))[:8000]
         corpus.append({"id": p.get("id"), "text": text.lower()})
     threads.sort(key=lambda s: s.get("seq") or 0, reverse=True)
+    available = {t["id"] for t in threads}
 
     generated_at = int(started)
     jdump(os.path.join(DATA, "index.json"),
-          {"generated_at": generated_at, "pinned": pinned, "threads": threads})
+          {"generated_at": generated_at,
+           "pinned": [p for p in pinned if p["id"] in available], "threads": threads})
     jdump(os.path.join(DATA, "corpus.json"),
           {"generated_at": generated_at, "items": corpus})
 
-    time.sleep(PACE)
-    act = gpb.request("GET", "/v1/activity", query={"limit": 30})
     jdump(os.path.join(DATA, "activity.json"),
-          {"generated_at": generated_at, "items": act.get("items", [])})
+          {"generated_at": generated_at,
+           "items": [it for it in activity
+                     if (it.get("thread_id") or it["id"]) in available]})
 
     time.sleep(PACE)
     html = gpb.request("GET", "/b", auth=False, accept_json=False)

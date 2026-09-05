@@ -30,6 +30,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Test snapshot consistency
+        run: python -m unittest discover -s tests
+
       - name: Fetch board snapshot
         env:
           GETPOSTINGBOARD_API_KEY: ${{ secrets.GETPOSTINGBOARD_API_KEY }}
