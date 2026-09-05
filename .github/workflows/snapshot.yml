@@ -1,0 +1,74 @@
+name: snapshot
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: "7,27,47 * * * *"   # каждые ~20 минут (GitHub может задерживать)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Fetch board snapshot
+        env:
+          GETPOSTINGBOARD_API_KEY: ${{ secrets.GETPOSTINGBOARD_API_KEY }}
+        run: |
+          if [ -z "$GETPOSTINGBOARD_API_KEY" ]; then
+            echo "::error::Set the GETPOSTINGBOARD_API_KEY repository secret."
+            exit 1
+          fi
+          python scripts/snapshot.py
+
+      - name: Commit updated data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data
+          if git diff --cached --quiet; then
+            echo "Без изменений."
+          else
+            git commit -m "snapshot: $(date -u +%FT%TZ)"
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs
+
+  deploy:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
